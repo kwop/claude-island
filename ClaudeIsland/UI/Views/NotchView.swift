@@ -20,6 +20,7 @@ struct NotchView: View {
     @StateObject private var sessionMonitor = ClaudeSessionMonitor()
     @StateObject private var activityCoordinator = NotchActivityCoordinator.shared
     @ObservedObject private var updateManager = UpdateManager.shared
+    @ObservedObject private var appSettings = AppSettings.shared
     @State private var previousPendingIds: Set<String> = []
     @State private var isVisible: Bool = false
     @State private var isHovering: Bool = false
@@ -216,12 +217,12 @@ struct NotchView: View {
             // Left side - crab + optional permission indicator (visible when processing or pending)
             if showClosedActivity {
                 HStack(spacing: 4) {
-                    ClaudeCrabIcon(size: 14, animateLegs: isProcessing)
+                    ClaudeCrabIcon(size: 14, color: appSettings.mascotColorValue, animateLegs: isProcessing)
                         .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: showClosedActivity)
 
                     // Permission indicator when pending
                     if hasPendingPermission {
-                        PermissionIndicatorIcon(size: 14, color: Color(red: 0.85, green: 0.47, blue: 0.34))
+                        PermissionIndicatorIcon(size: 14, color: appSettings.mascotColorValue)
                             .matchedGeometryEffect(id: "permission", in: activityNamespace, isSource: showClosedActivity)
                     }
                 }
@@ -267,7 +268,7 @@ struct NotchView: View {
             // Show static crab only if not showing activity in headerRow
             // (headerRow handles crab + indicator when showClosedActivity is true)
             if !showClosedActivity {
-                ClaudeCrabIcon(size: 14)
+                ClaudeCrabIcon(size: 14, color: appSettings.mascotColorValue)
                     .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: !showClosedActivity)
                     .padding(.leading, 8)
             }

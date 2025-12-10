@@ -68,7 +68,7 @@ class NotchViewModel: ObservableObject {
             // Taller size for settings menu
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: 400
+                height: 520
             )
         case .instances:
             return CGSize(

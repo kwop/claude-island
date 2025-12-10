@@ -412,19 +412,57 @@ struct ChatView: View {
         ChatApprovalBar(
             tool: tool,
             toolInput: session.pendingToolInput,
+            toolInputDict: session.activePermission?.toolInput,
             onApprove: { approvePermission() },
-            onDeny: { denyPermission() }
+            onDeny: { denyPermission() },
+            onDenyWithInstructions: { instructions in
+                denyPermissionWithInstructions(instructions)
+            },
+            onApproveAll: { approveAllEdits() },
+            isInTmux: session.isInTmux
         )
     }
 
+    private func approveAllEdits() {
+        sessionMonitor.approveAllEditsInSession(sessionId: sessionId)
+    }
+
     // MARK: - Interactive Prompt Bar
+
+    @ObservedObject private var appSettings = AppSettings.shared
 
     /// Bar for interactive tools like AskUserQuestion that need terminal input
     private var interactivePromptBar: some View {
         ChatInteractivePromptBar(
             isInTmux: session.isInTmux,
-            onGoToTerminal: { focusTerminal() }
+            questions: parseQuestions(from: session.activePermission?.toolInput),
+            answerInUI: appSettings.answerQuestionsInUI,
+            onGoToTerminal: { focusTerminal() },
+            onAnswer: { answer in answerQuestion(answer) }
         )
+    }
+
+    /// Parse questions from AskUserQuestion tool input
+    private func parseQuestions(from toolInput: [String: AnyCodable]?) -> [ParsedQuestion]? {
+        guard let input = toolInput,
+              let questionsValue = input["questions"]?.value as? [[String: Any]] else {
+            return nil
+        }
+
+        return questionsValue.compactMap { dict -> ParsedQuestion? in
+            guard let question = dict["question"] as? String else { return nil }
+
+            let header = dict["header"] as? String
+            let optionsArray = dict["options"] as? [[String: Any]] ?? []
+
+            let options = optionsArray.compactMap { optDict -> ParsedOption? in
+                guard let label = optDict["label"] as? String else { return nil }
+                let description = optDict["description"] as? String
+                return ParsedOption(label: label, description: description)
+            }
+
+            return ParsedQuestion(question: question, header: header, options: options)
+        }
     }
 
     // MARK: - Autoscroll Management
@@ -460,6 +498,14 @@ struct ChatView: View {
 
     private func denyPermission() {
         sessionMonitor.denyPermission(sessionId: sessionId, reason: nil)
+    }
+
+    private func denyPermissionWithInstructions(_ instructions: String) {
+        sessionMonitor.denyPermissionWithInstructions(sessionId: sessionId, instructions: instructions)
+    }
+
+    private func answerQuestion(_ answer: String) {
+        sessionMonitor.answerQuestion(sessionId: sessionId, answer: answer)
     }
 
     private func sendMessage() {
@@ -624,9 +670,20 @@ struct ToolCallView: View {
     let tool: ToolCallItem
     let sessionId: String
 
+    @ObservedObject private var appSettings = AppSettings.shared
     @State private var pulseOpacity: Double = 0.6
     @State private var isExpanded: Bool = false
     @State private var isHovering: Bool = false
+
+    /// Status display with optional result summary
+    private var statusDisplayWithSummary: ToolStatusDisplay {
+        ToolStatusDisplay.completedWithSummary(
+            for: tool.name,
+            result: tool.structuredResult,
+            rawResult: tool.result,
+            status: tool.status
+        )
+    }
 
     private var statusColor: Color {
         switch tool.status {
@@ -651,6 +708,15 @@ struct ToolCallView: View {
             return .white.opacity(0.7)
         case .error, .interrupted:
             return Color.red.opacity(0.8)
+        }
+    }
+
+    private var summaryColor: Color {
+        switch tool.status {
+        case .error, .interrupted:
+            return Color.red.opacity(0.6)
+        default:
+            return .white.opacity(0.5)
         }
     }
 
@@ -733,6 +799,27 @@ struct ToolCallView: View {
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isExpanded)
                 }
+            }
+
+            // Result summary line (when tool details are enabled)
+            if appSettings.showToolResultDetails,
+               let summary = statusDisplayWithSummary.resultSummary,
+               tool.status != .running,
+               tool.status != .waitingForApproval {
+                HStack(spacing: 6) {
+                    // Indent to align with tool name
+                    Rectangle()
+                        .fill(Color.clear)
+                        .frame(width: 6)
+
+                    Text(summary)
+                        .font(.system(size: 11))
+                        .foregroundColor(summaryColor)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                .padding(.leading, 12)
+                .transition(.opacity)
             }
 
             // Subagent tools list (for Task tools)
@@ -979,17 +1066,241 @@ struct InterruptedMessageView: View {
     }
 }
 
+// MARK: - Parsed Question Structures
+
+/// Parsed question from AskUserQuestion tool input
+struct ParsedQuestion {
+    let question: String
+    let header: String?
+    let options: [ParsedOption]
+}
+
+/// Parsed option for a question
+struct ParsedOption {
+    let label: String
+    let description: String?
+}
+
 // MARK: - Chat Interactive Prompt Bar
 
 /// Bar for interactive tools like AskUserQuestion that need terminal input
 struct ChatInteractivePromptBar: View {
     let isInTmux: Bool
+    let questions: [ParsedQuestion]?
+    let answerInUI: Bool
     let onGoToTerminal: () -> Void
+    let onAnswer: (String) -> Void
 
+    @State private var answers: [Int: String] = [:]  // questionIndex -> selected answer
+    @State private var customAnswers: [Int: String] = [:]  // questionIndex -> custom text
     @State private var showContent = false
     @State private var showButton = false
 
     var body: some View {
+        if answerInUI, let questions = questions, !questions.isEmpty {
+            // Mode UI: show options as buttons
+            questionUIView(questions: questions)
+        } else {
+            // Mode terminal: current behavior
+            terminalModeView
+        }
+    }
+
+    /// Check if all questions have been answered
+    private func allQuestionsAnswered(count: Int) -> Bool {
+        for i in 0..<count {
+            if answers[i] == nil {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Build the final answer string for all questions
+    private func buildFinalAnswer(questions: [ParsedQuestion]) -> String {
+        var parts: [String] = []
+        for (index, question) in questions.enumerated() {
+            if let answer = answers[index] {
+                let header = question.header ?? "Q\(index + 1)"
+                parts.append("\(header): \(answer)")
+            }
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    private func questionUIView(questions: [ParsedQuestion]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Header
+            Text(MCPToolFormatter.formatToolName("AskUserQuestion"))
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundColor(TerminalColors.amber)
+
+            // All questions in a scrollable area
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(questions.enumerated()), id: \.offset) { index, question in
+                        questionRow(question: question, index: index)
+                    }
+                }
+            }
+            .frame(maxHeight: 280)  // Limit height to allow scrolling
+
+            // Submit button (appears when all questions answered)
+            if allQuestionsAnswered(count: questions.count) {
+                Divider()
+                    .background(Color.white.opacity(0.1))
+
+                HStack {
+                    // Recap
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(questions.enumerated()), id: \.offset) { index, question in
+                            if let answer = answers[index] {
+                                HStack(spacing: 4) {
+                                    Text(question.header ?? "Q\(index + 1)")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(.white.opacity(0.5))
+                                    Text(answer)
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.white.opacity(0.8))
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer()
+
+                    // Submit button
+                    Button {
+                        onAnswer(buildFinalAnswer(questions: questions))
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 11, weight: .bold))
+                            Text("Soumettre")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.95))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .frame(minHeight: 44)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.black.opacity(0.2))
+        .onAppear {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.05)) {
+                showContent = true
+            }
+        }
+    }
+
+    private func questionRow(question: ParsedQuestion, index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Question header + text
+            HStack(spacing: 6) {
+                if let header = question.header {
+                    Text(header)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(TerminalColors.cyan)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(TerminalColors.cyan.opacity(0.2))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+
+                // Checkmark if answered
+                if answers[index] != nil {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(TerminalColors.green)
+                }
+            }
+
+            Text(question.question)
+                .font(.system(size: 12))
+                .foregroundColor(.white.opacity(0.8))
+                .lineLimit(2)
+
+            // Options as buttons
+            FlowLayout(spacing: 6) {
+                ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
+                    Button {
+                        answers[index] = option.label
+                    } label: {
+                        Text(option.label)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(answers[index] == option.label ? .black : .white.opacity(0.9))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(answers[index] == option.label ? Color.white.opacity(0.95) : Color.white.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                // "Other" button to show text field
+                Button {
+                    // Toggle custom input for this question
+                    if customAnswers[index] == nil {
+                        customAnswers[index] = ""
+                    }
+                } label: {
+                    Text("Autre...")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+
+            // Custom answer text field (if activated)
+            if customAnswers[index] != nil {
+                HStack(spacing: 8) {
+                    TextField("Votre réponse...", text: Binding(
+                        get: { customAnswers[index] ?? "" },
+                        set: { customAnswers[index] = $0 }
+                    ))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .onSubmit {
+                        if let text = customAnswers[index], !text.isEmpty {
+                            answers[index] = text
+                        }
+                    }
+
+                    Button {
+                        if let text = customAnswers[index], !text.isEmpty {
+                            answers[index] = text
+                        }
+                    } label: {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundColor((customAnswers[index] ?? "").isEmpty ? .white.opacity(0.3) : TerminalColors.green)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled((customAnswers[index] ?? "").isEmpty)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var terminalModeView: some View {
         HStack(spacing: 12) {
             // Tool info - same style as approval bar
             VStack(alignment: .leading, spacing: 2) {
@@ -1043,69 +1354,115 @@ struct ChatInteractivePromptBar: View {
     }
 }
 
+// MARK: - Flow Layout for wrapping buttons
+
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let result = arrange(proposal: proposal, subviews: subviews)
+        return result.size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = arrange(proposal: proposal, subviews: subviews)
+        for (index, position) in result.positions.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + position.x, y: bounds.minY + position.y), proposal: .unspecified)
+        }
+    }
+
+    private func arrange(proposal: ProposedViewSize, subviews: Subviews) -> (size: CGSize, positions: [CGPoint]) {
+        let maxWidth = proposal.width ?? .infinity
+        var positions: [CGPoint] = []
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var totalHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+
+            if currentX + size.width > maxWidth && currentX > 0 {
+                currentX = 0
+                currentY += lineHeight + spacing
+                lineHeight = 0
+            }
+
+            positions.append(CGPoint(x: currentX, y: currentY))
+            currentX += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+            totalHeight = currentY + lineHeight
+        }
+
+        return (CGSize(width: maxWidth, height: totalHeight), positions)
+    }
+}
+
 // MARK: - Chat Approval Bar
 
 /// Approval bar for the chat view with animated buttons
 struct ChatApprovalBar: View {
     let tool: String
     let toolInput: String?
+    let toolInputDict: [String: AnyCodable]?
     let onApprove: () -> Void
     let onDeny: () -> Void
+    let onDenyWithInstructions: (String) -> Void
+    var onApproveAll: (() -> Void)?
+    var isInTmux: Bool = true
+
+    @ObservedObject private var appSettings = AppSettings.shared
 
     @State private var showContent = false
     @State private var showAllowButton = false
     @State private var showDenyButton = false
+    @State private var showAllButton = false
+    @State private var showInstructionsMode = false
+    @State private var instructionsText = ""
+    @State private var isInputExpanded = false
+
+    /// Whether this tool supports "Allow all in session" (Edit only)
+    private var supportsAllowAll: Bool {
+        tool == "Edit" && isInTmux && onApproveAll != nil
+    }
+
+    /// Whether this tool supports opening in external editor (Edit/Write with file_path)
+    private var supportsOpenInEditor: Bool {
+        (tool == "Edit" || tool == "Write") && filePath != nil && !appSettings.availableEditors.isEmpty
+    }
+
+    /// Extract file_path from tool input
+    private var filePath: String? {
+        toolInputDict?["file_path"]?.value as? String
+    }
+
+    /// Extract old_string from Edit tool input (to find line number)
+    private var oldString: String? {
+        toolInputDict?["old_string"]?.value as? String
+    }
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Tool info
-            VStack(alignment: .leading, spacing: 2) {
-                Text(MCPToolFormatter.formatToolName(tool))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(TerminalColors.amber)
-                if let input = toolInput {
-                    Text(input)
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.5))
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: 8) {
+            if showInstructionsMode {
+                // Instructions mode
+                HStack(spacing: 8) {
+                    instructionsModeContent
+                }
+            } else if isInputExpanded {
+                // Expanded mode: tool info on top, buttons below
+                normalModeToolInfo
+                HStack(spacing: 8) {
+                    Spacer()
+                    normalModeButtons
+                }
+            } else {
+                // Compact mode: everything in one row
+                HStack(spacing: 8) {
+                    normalModeToolInfo
+                    Spacer()
+                    normalModeButtons
                 }
             }
-            .opacity(showContent ? 1 : 0)
-            .offset(x: showContent ? 0 : -10)
-
-            Spacer()
-
-            // Deny button
-            Button {
-                onDeny()
-            } label: {
-                Text("Deny")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color.white.opacity(0.1))
-                    .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .opacity(showDenyButton ? 1 : 0)
-            .scaleEffect(showDenyButton ? 1 : 0.8)
-
-            // Allow button
-            Button {
-                onApprove()
-            } label: {
-                Text("Allow")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.black)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color.white.opacity(0.95))
-                    .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .opacity(showAllowButton ? 1 : 0)
-            .scaleEffect(showAllowButton ? 1 : 0.8)
         }
         .frame(minHeight: 44)  // Consistent height with other bars
         .padding(.horizontal, 16)
@@ -1118,10 +1475,217 @@ struct ChatApprovalBar: View {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.7).delay(0.1)) {
                 showDenyButton = true
             }
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.7).delay(0.12)) {
+                showAllButton = true
+            }
             withAnimation(.spring(response: 0.35, dampingFraction: 0.7).delay(0.15)) {
                 showAllowButton = true
             }
         }
+        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isInputExpanded)
+    }
+
+    /// Whether the input is long enough to warrant expansion
+    private var isInputLong: Bool {
+        guard let input = toolInput else { return false }
+        return input.count > 50
+    }
+
+    /// Tool name and input display
+    private var normalModeToolInfo: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(MCPToolFormatter.formatToolName(tool))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(TerminalColors.amber)
+
+                // Expand/collapse button for long inputs
+                if isInputLong {
+                    Button {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                            isInputExpanded.toggle()
+                        }
+                    } label: {
+                        Image(systemName: isInputExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white.opacity(0.4))
+                            .padding(4)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            if let input = toolInput {
+                Text(input)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.6))
+                    .lineLimit(isInputExpanded ? nil : 1)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: isInputExpanded ? .infinity : nil, alignment: .leading)
+            }
+        }
+        .opacity(showContent ? 1 : 0)
+        .offset(x: showContent ? 0 : -10)
+    }
+
+    /// Action buttons (Deny, Allow, etc.)
+    @ViewBuilder
+    private var normalModeButtons: some View {
+        // Deny button
+        Button {
+            onDeny()
+        } label: {
+            Text("Deny")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.white.opacity(0.7))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.1))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .opacity(showDenyButton ? 1 : 0)
+        .scaleEffect(showDenyButton ? 1 : 0.8)
+
+        // Deny+ button (deny with instructions)
+        Button {
+            withAnimation(.spring(response: 0.25)) {
+                showInstructionsMode = true
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Text("Deny")
+                Image(systemName: "text.bubble")
+                    .font(.system(size: 10))
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(.white.opacity(0.8))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.white.opacity(0.15))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .opacity(showDenyButton ? 1 : 0)
+        .scaleEffect(showDenyButton ? 1 : 0.8)
+
+        // Open in editor button (for Edit/Write tools)
+        if supportsOpenInEditor {
+            Button {
+                openInEditor()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.up.forward.app")
+                        .font(.system(size: 10, weight: .medium))
+                    Text("Ouvrir")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundColor(.white.opacity(0.9))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.15))
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .opacity(showAllButton ? 1 : 0)
+            .scaleEffect(showAllButton ? 1 : 0.8)
+        }
+
+        // Allow All button (for Edit tools in tmux)
+        if supportsAllowAll {
+            Button {
+                onApproveAll?()
+            } label: {
+                Text("All")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.9))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.2))
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .opacity(showAllButton ? 1 : 0)
+            .scaleEffect(showAllButton ? 1 : 0.8)
+        }
+
+        // Allow button
+        Button {
+            onApprove()
+        } label: {
+            Text("Allow")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.black)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.95))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .opacity(showAllowButton ? 1 : 0)
+        .scaleEffect(showAllowButton ? 1 : 0.8)
+    }
+
+    private var instructionsModeContent: some View {
+        Group {
+            // Cancel button
+            Button {
+                withAnimation(.spring(response: 0.25)) {
+                    showInstructionsMode = false
+                    instructionsText = ""
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.6))
+                    .padding(8)
+                    .background(Color.white.opacity(0.1))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+
+            // Text field for instructions
+            TextField("Instructions for Claude...", text: $instructionsText)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.white.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .onSubmit {
+                    guard !instructionsText.isEmpty else { return }
+                    onDenyWithInstructions(instructionsText)
+                }
+
+            // Send button
+            Button {
+                guard !instructionsText.isEmpty else { return }
+                onDenyWithInstructions(instructionsText)
+            } label: {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(instructionsText.isEmpty ? .white.opacity(0.3) : .white)
+            }
+            .buttonStyle(.plain)
+            .disabled(instructionsText.isEmpty)
+        }
+    }
+
+    /// Open the file in the preferred external editor
+    private func openInEditor() {
+        guard let path = filePath,
+              let editor = appSettings.preferredEditorValue else { return }
+
+        // For Edit tool, try to find the line number
+        var lineNumber: Int? = nil
+        if tool == "Edit", let searchString = oldString {
+            lineNumber = ExternalEditorService.findLineNumber(of: searchString, in: path)
+        }
+
+        ExternalEditorService.openFile(path: path, line: lineNumber, editor: editor)
     }
 }
 

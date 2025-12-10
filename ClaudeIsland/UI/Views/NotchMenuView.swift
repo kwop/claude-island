@@ -17,6 +17,7 @@ import Sparkle
 struct NotchMenuView: View {
     @ObservedObject var viewModel: NotchViewModel
     @ObservedObject private var updateManager = UpdateManager.shared
+    @ObservedObject private var appSettings = AppSettings.shared
     @State private var hooksInstalled: Bool = false
     @State private var launchAtLogin: Bool = false
 
@@ -69,6 +70,32 @@ struct NotchMenuView: View {
                 } catch {
                     print("Failed to toggle launch at login: \(error)")
                 }
+            }
+
+            // Tool Result Details toggle
+            MenuToggleRow(
+                icon: "text.below.photo",
+                label: "Tool Details",
+                isOn: appSettings.showToolResultDetails
+            ) {
+                appSettings.showToolResultDetails.toggle()
+            }
+
+            // Answer Questions in UI toggle
+            MenuToggleRow(
+                icon: "bubble.left.and.bubble.right",
+                label: "Answer in UI",
+                isOn: appSettings.answerQuestionsInUI
+            ) {
+                appSettings.answerQuestionsInUI.toggle()
+            }
+
+            // Mascot color picker
+            MascotColorRow(appSettings: appSettings)
+
+            // External editor picker
+            if !appSettings.availableEditors.isEmpty {
+                EditorPickerRow(appSettings: appSettings)
             }
 
             Divider()
@@ -454,7 +481,8 @@ struct MenuRow: View {
                 Spacer()
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 8)
                     .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
@@ -503,7 +531,8 @@ struct MenuToggleRow: View {
                     .foregroundColor(.white.opacity(0.4))
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 8)
                     .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
@@ -515,5 +544,89 @@ struct MenuToggleRow: View {
 
     private var textColor: Color {
         .white.opacity(isHovered ? 1.0 : 0.7)
+    }
+}
+
+// MARK: - Mascot Color Picker Row
+
+struct MascotColorRow: View {
+    @ObservedObject var appSettings: AppSettings
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "paintpalette")
+                .font(.system(size: 12))
+                .foregroundColor(.white.opacity(0.7))
+                .frame(width: 16)
+
+            Text("Couleur")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.7))
+
+            Spacer()
+
+            HStack(spacing: 6) {
+                ForEach(AppSettings.mascotColors, id: \.id) { colorOption in
+                    Button {
+                        appSettings.mascotColor = colorOption.id
+                    } label: {
+                        Circle()
+                            .fill(colorOption.color)
+                            .frame(width: 16, height: 16)
+                            .overlay(
+                                Circle()
+                                    .stroke(Color.white, lineWidth: appSettings.mascotColor == colorOption.id ? 2 : 0)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+}
+
+// MARK: - External Editor Picker Row
+
+struct EditorPickerRow: View {
+    @ObservedObject var appSettings: AppSettings
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.up.forward.app")
+                .font(.system(size: 12))
+                .foregroundColor(.white.opacity(0.7))
+                .frame(width: 16)
+
+            Text("Éditeur")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.7))
+
+            Spacer()
+
+            HStack(spacing: 6) {
+                ForEach(appSettings.availableEditors) { editor in
+                    Button {
+                        appSettings.preferredEditor = editor.rawValue
+                    } label: {
+                        Text(editor.displayName)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(appSettings.preferredEditor == editor.rawValue ? .black : .white.opacity(0.8))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                appSettings.preferredEditor == editor.rawValue
+                                    ? Color.white.opacity(0.95)
+                                    : Color.white.opacity(0.15)
+                            )
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 }

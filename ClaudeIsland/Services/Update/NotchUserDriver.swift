@@ -58,6 +58,13 @@ class UpdateManager: NSObject, ObservableObject {
         state = .checking
         if let updater = AppDelegate.shared?.updater {
             updater.checkForUpdates()
+            // Timeout: if still checking after 15 seconds, reset to idle
+            Task {
+                try? await Task.sleep(for: .seconds(15))
+                if case .checking = self.state {
+                    self.state = .idle
+                }
+            }
         } else {
             state = .error(message: "Updater not initialized")
         }
@@ -182,6 +189,13 @@ class NotchUserDriver: NSObject, SPUUserDriver {
     func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) {
         Task { @MainActor in
             UpdateManager.shared.state = .checking
+            // Timeout: if still checking after 15 seconds, reset to idle
+            Task {
+                try? await Task.sleep(for: .seconds(15))
+                if case .checking = UpdateManager.shared.state {
+                    UpdateManager.shared.state = .idle
+                }
+            }
         }
     }
 

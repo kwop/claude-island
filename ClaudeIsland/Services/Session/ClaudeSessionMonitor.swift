@@ -94,6 +94,57 @@ class ClaudeSessionMonitor: ObservableObject {
         }
     }
 
+    /// Approve all edits for this session (via tmux, sends '4' + Enter)
+    func approveAllEditsInSession(sessionId: String) {
+        Task {
+            guard let session = await SessionStore.shared.session(for: sessionId) else { return }
+
+            // Need to find the tmux target and send '4' which is "Allow all Edit in this session"
+            guard let tty = session.tty else { return }
+
+            if let target = await findTmuxTarget(tty: tty) {
+                // Send '4' + Enter for "Allow all Edit in this session"
+                let tmuxPath = await TmuxPathFinder.shared.getTmuxPath()
+                if let path = tmuxPath {
+                    let targetStr = target.targetString
+                    _ = try? await ProcessExecutor.shared.run(path, arguments: ["send-keys", "-t", targetStr, "-l", "4"])
+                    _ = try? await ProcessExecutor.shared.run(path, arguments: ["send-keys", "-t", targetStr, "Enter"])
+                }
+            }
+        }
+    }
+
+    /// Find tmux target for a given tty
+    private func findTmuxTarget(tty: String) async -> TmuxTarget? {
+        guard let tmuxPath = await TmuxPathFinder.shared.getTmuxPath() else {
+            return nil
+        }
+
+        do {
+            let output = try await ProcessExecutor.shared.run(
+                tmuxPath,
+                arguments: ["list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index} #{pane_tty}"]
+            )
+
+            let lines = output.components(separatedBy: "\n")
+            for line in lines {
+                let parts = line.components(separatedBy: " ")
+                guard parts.count >= 2 else { continue }
+
+                let target = parts[0]
+                let paneTty = parts[1].replacingOccurrences(of: "/dev/", with: "")
+
+                if paneTty == tty {
+                    return TmuxTarget(from: target)
+                }
+            }
+        } catch {
+            return nil
+        }
+
+        return nil
+    }
+
     func denyPermission(sessionId: String, reason: String?) {
         Task {
             guard let session = await SessionStore.shared.session(for: sessionId),
@@ -110,6 +161,45 @@ class ClaudeSessionMonitor: ObservableObject {
             await SessionStore.shared.process(
                 .permissionDenied(sessionId: sessionId, toolUseId: permission.toolUseId, reason: reason)
             )
+        }
+    }
+
+    /// Deny permission with instructions for Claude
+    func denyPermissionWithInstructions(sessionId: String, instructions: String) {
+        Task {
+            guard let session = await SessionStore.shared.session(for: sessionId),
+                  let permission = session.activePermission else {
+                return
+            }
+
+            // Deny via socket with the instructions as reason
+            HookSocketServer.shared.respondToPermission(
+                toolUseId: permission.toolUseId,
+                decision: "deny",
+                reason: instructions
+            )
+
+            // Update session state
+            await SessionStore.shared.process(
+                .permissionDenied(
+                    sessionId: sessionId,
+                    toolUseId: permission.toolUseId,
+                    reason: instructions
+                )
+            )
+        }
+    }
+
+    /// Answer a question from Claude (for AskUserQuestion tool)
+    func answerQuestion(sessionId: String, answer: String) {
+        Task {
+            guard let session = await SessionStore.shared.session(for: sessionId),
+                  let tty = session.tty,
+                  let target = await findTmuxTarget(tty: tty) else {
+                return
+            }
+
+            _ = await ToolApprovalHandler.shared.sendMessage(answer, to: target)
         }
     }
 

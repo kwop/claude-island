@@ -262,6 +262,8 @@ struct GenericResult: Equatable, @unchecked Sendable {
 struct ToolStatusDisplay {
     let text: String
     let isRunning: Bool
+    /// Optional result summary shown as a second line (e.g., "Interrupted - What should Claude do instead?")
+    var resultSummary: String?
 
     /// Get running status text for a tool
     static func running(for toolName: String, input: [String: String]) -> ToolStatusDisplay {
@@ -377,5 +379,79 @@ struct ToolStatusDisplay {
         case .generic:
             return ToolStatusDisplay(text: "Completed", isRunning: false)
         }
+    }
+
+    /// Get completed status with result summary from raw result text
+    static func completedWithSummary(
+        for toolName: String,
+        result: ToolResultData?,
+        rawResult: String?,
+        status: ToolStatus
+    ) -> ToolStatusDisplay {
+        var display = completed(for: toolName, result: result)
+
+        // Add summary for interrupted or error states
+        if status == .interrupted {
+            display.resultSummary = extractSummary(from: rawResult, prefix: "Interrupted")
+        } else if status == .error {
+            display.resultSummary = extractSummary(from: rawResult, prefix: "Error")
+        } else if let raw = rawResult, !raw.isEmpty {
+            // For successful completions, extract a meaningful summary
+            display.resultSummary = extractResultSummary(from: raw, toolName: toolName, result: result)
+        }
+
+        return display
+    }
+
+    /// Extract summary from raw result text
+    private static func extractSummary(from rawResult: String?, prefix: String) -> String? {
+        guard let raw = rawResult, !raw.isEmpty else { return nil }
+
+        // Clean up and extract first meaningful line
+        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = cleaned.components(separatedBy: "\n")
+
+        // Find first non-empty line that's not just whitespace
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty && trimmed.count > 3 {
+                // Limit length and add prefix if needed
+                let summary = String(trimmed.prefix(80))
+                if summary != prefix {
+                    return "\(prefix) - \(summary)"
+                }
+                return summary
+            }
+        }
+
+        return nil
+    }
+
+    /// Extract a meaningful summary based on tool type and result
+    private static func extractResultSummary(from raw: String, toolName: String, result: ToolResultData?) -> String? {
+        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Skip if too short
+        guard cleaned.count > 10 else { return nil }
+
+        // For certain tools, don't show summary (already shown in expanded view)
+        switch toolName {
+        case "Read", "Edit", "Write", "Glob", "Grep", "TodoWrite":
+            return nil
+        default:
+            break
+        }
+
+        // Extract first meaningful line
+        let lines = cleaned.components(separatedBy: "\n")
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Skip lines that are just punctuation or very short
+            if trimmed.count > 5 && !trimmed.hasPrefix("{") && !trimmed.hasPrefix("[") {
+                return String(trimmed.prefix(100))
+            }
+        }
+
+        return nil
     }
 }
