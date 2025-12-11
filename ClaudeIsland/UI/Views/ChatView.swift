@@ -1679,13 +1679,12 @@ struct ChatApprovalBar: View {
         guard let path = filePath,
               let editor = appSettings.preferredEditorValue else { return }
 
-        // For Edit tool, try to find the line number
-        var lineNumber: Int? = nil
-        if tool == "Edit", let searchString = oldString {
-            lineNumber = ExternalEditorService.findLineNumber(of: searchString, in: path)
+        // For Edit tool with oldString, open in diff mode
+        if tool == "Edit", let oldContent = oldString {
+            ExternalEditorService.openDiff(path: path, oldContent: oldContent, editor: editor)
+        } else {
+            ExternalEditorService.openFile(path: path, line: nil, editor: editor)
         }
-
-        ExternalEditorService.openFile(path: path, line: lineNumber, editor: editor)
     }
 }
 

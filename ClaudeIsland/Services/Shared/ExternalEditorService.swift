@@ -58,6 +58,16 @@ enum ExternalEditor: String, CaseIterable, Identifiable {
             }
         }
     }
+
+    /// Build command arguments to open diff view
+    func diffArguments(oldPath: String, newPath: String) -> [String] {
+        switch self {
+        case .vscode, .cursor:
+            return ["--diff", oldPath, newPath]
+        case .idea:
+            return ["diff", oldPath, newPath]
+        }
+    }
 }
 
 // MARK: - External Editor Service
@@ -199,5 +209,45 @@ struct ExternalEditorService {
         let lineNumber = prefix.components(separatedBy: "\n").count
 
         return lineNumber
+    }
+
+    /// Open a diff view comparing old content with current file
+    /// - Parameters:
+    ///   - path: Absolute path to the current file
+    ///   - oldContent: The old content to compare against
+    ///   - editor: The editor to use
+    static func openDiff(path: String, oldContent: String, editor: ExternalEditor) {
+        Task.detached {
+            // Create temp file with old content
+            let tempDir = FileManager.default.temporaryDirectory
+            let fileName = (path as NSString).lastPathComponent
+            let tempPath = tempDir.appendingPathComponent("old_\(fileName)").path
+
+            do {
+                try oldContent.write(toFile: tempPath, atomically: true, encoding: .utf8)
+            } catch {
+                print("Failed to create temp file for diff: \(error)")
+                return
+            }
+
+            guard let commandPath = findCommandPath(editor.command) else {
+                print("Could not find \(editor.command) command")
+                return
+            }
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: commandPath)
+            process.arguments = editor.diffArguments(oldPath: tempPath, newPath: path)
+
+            var environment = Foundation.ProcessInfo.processInfo.environment
+            environment["PATH"] = (environment["PATH"] ?? "") + ":/usr/local/bin:/opt/homebrew/bin"
+            process.environment = environment
+
+            do {
+                try process.run()
+            } catch {
+                print("Failed to open diff in \(editor.displayName): \(error)")
+            }
+        }
     }
 }
