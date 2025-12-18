@@ -1095,6 +1095,7 @@ struct ChatInteractivePromptBar: View {
     @State private var customAnswers: [Int: String] = [:]  // questionIndex -> custom text
     @State private var showContent = false
     @State private var showButton = false
+    @State private var showDetailSheet = false
 
     var body: some View {
         if answerInUI, let questions = questions, !questions.isEmpty {
@@ -1128,12 +1129,43 @@ struct ChatInteractivePromptBar: View {
         return parts.joined(separator: "\n")
     }
 
+    /// Check if any option has a description
+    private func hasOptionDescriptions(_ questions: [ParsedQuestion]) -> Bool {
+        questions.contains { question in
+            question.options.contains { $0.description != nil && !($0.description?.isEmpty ?? true) }
+        }
+    }
+
     private func questionUIView(questions: [ParsedQuestion]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Header
-            Text(MCPToolFormatter.formatToolName("AskUserQuestion"))
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundColor(TerminalColors.amber)
+            // Header with expand button
+            HStack {
+                Text(MCPToolFormatter.formatToolName("AskUserQuestion"))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(TerminalColors.amber)
+
+                Spacer()
+
+                // Show detail button if there are descriptions
+                if hasOptionDescriptions(questions) {
+                    Button {
+                        showDetailSheet = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.system(size: 10, weight: .medium))
+                            Text("Détails")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundColor(.white.opacity(0.6))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
 
             // All questions in a scrollable area
             ScrollView(.vertical, showsIndicators: true) {
@@ -1198,6 +1230,18 @@ struct ChatInteractivePromptBar: View {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.05)) {
                 showContent = true
             }
+        }
+        .sheet(isPresented: $showDetailSheet) {
+            QuestionDetailSheet(
+                questions: questions,
+                answers: $answers,
+                customAnswers: $customAnswers,
+                onSubmit: {
+                    showDetailSheet = false
+                    onAnswer(buildFinalAnswer(questions: questions))
+                },
+                allAnswered: allQuestionsAnswered(count: questions.count)
+            )
         }
     }
 
@@ -1354,6 +1398,214 @@ struct ChatInteractivePromptBar: View {
     }
 }
 
+// MARK: - Question Detail Sheet
+
+/// Full-screen scrollable sheet for viewing question details with descriptions
+struct QuestionDetailSheet: View {
+    let questions: [ParsedQuestion]
+    @Binding var answers: [Int: String]
+    @Binding var customAnswers: [Int: String]
+    let onSubmit: () -> Void
+    let allAnswered: Bool
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                        .frame(width: 32, height: 32)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Text("Questions")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+
+                Spacer()
+
+                // Submit button if all answered
+                if allAnswered {
+                    Button {
+                        onSubmit()
+                    } label: {
+                        Text("Soumettre")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.95))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Color.clear.frame(width: 32, height: 32)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(Color.black.opacity(0.3))
+
+            // Scrollable content
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 24) {
+                    ForEach(Array(questions.enumerated()), id: \.offset) { index, question in
+                        detailQuestionRow(question: question, index: index)
+                    }
+                }
+                .padding(20)
+            }
+        }
+        .background(Color(red: 0.08, green: 0.08, blue: 0.08))
+        .frame(minWidth: 400, minHeight: 300)
+    }
+
+    private func detailQuestionRow(question: ParsedQuestion, index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Question header
+            HStack(spacing: 8) {
+                if let header = question.header {
+                    Text(header)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(TerminalColors.cyan)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(TerminalColors.cyan.opacity(0.2))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+
+                if answers[index] != nil {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(TerminalColors.green)
+                }
+            }
+
+            // Full question text (no line limit)
+            Text(question.question)
+                .font(.system(size: 14))
+                .foregroundColor(.white.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Options with descriptions
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
+                    Button {
+                        answers[index] = option.label
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            // Selection indicator
+                            Image(systemName: answers[index] == option.label ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 16))
+                                .foregroundColor(answers[index] == option.label ? TerminalColors.green : .white.opacity(0.3))
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(option.label)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(answers[index] == option.label ? .white : .white.opacity(0.9))
+
+                                if let description = option.description, !description.isEmpty {
+                                    Text(description)
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.white.opacity(0.5))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+
+                            Spacer()
+                        }
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(answers[index] == option.label ? Color.white.opacity(0.12) : Color.white.opacity(0.05))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .strokeBorder(answers[index] == option.label ? TerminalColors.green.opacity(0.5) : Color.clear, lineWidth: 1)
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                // Custom answer option
+                Button {
+                    if customAnswers[index] == nil {
+                        customAnswers[index] = ""
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "pencil.circle")
+                            .font(.system(size: 16))
+                            .foregroundColor(.white.opacity(0.4))
+
+                        Text("Autre réponse...")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.5))
+
+                        Spacer()
+                    }
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.white.opacity(0.03))
+                    )
+                }
+                .buttonStyle(.plain)
+
+                // Custom text field if activated
+                if customAnswers[index] != nil {
+                    HStack(spacing: 10) {
+                        TextField("Votre réponse...", text: Binding(
+                            get: { customAnswers[index] ?? "" },
+                            set: { customAnswers[index] = $0 }
+                        ))
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white)
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color.white.opacity(0.08))
+                        )
+                        .onSubmit {
+                            if let text = customAnswers[index], !text.isEmpty {
+                                answers[index] = text
+                            }
+                        }
+
+                        Button {
+                            if let text = customAnswers[index], !text.isEmpty {
+                                answers[index] = text
+                            }
+                        } label: {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 22))
+                                .foregroundColor((customAnswers[index] ?? "").isEmpty ? .white.opacity(0.2) : TerminalColors.green)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled((customAnswers[index] ?? "").isEmpty)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.04))
+        )
+    }
+}
+
 // MARK: - Flow Layout for wrapping buttons
 
 struct FlowLayout: Layout {
@@ -1439,6 +1691,11 @@ struct ChatApprovalBar: View {
     /// Extract old_string from Edit tool input (to find line number)
     private var oldString: String? {
         toolInputDict?["old_string"]?.value as? String
+    }
+
+    /// Extract new_string from Edit tool input (for diff)
+    private var newString: String? {
+        toolInputDict?["new_string"]?.value as? String
     }
 
     var body: some View {

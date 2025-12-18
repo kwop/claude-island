@@ -119,15 +119,7 @@ struct NotchMenuView: View {
                 .background(Color.white.opacity(0.08))
                 .padding(.vertical, 4)
 
-            MenuRow(
-                icon: "xmark.circle",
-                label: "Quit",
-                isDestructive: true
-            ) {
-                DispatchQueue.main.async {
-                    NSApplication.shared.terminate(nil)
-                }
-            }
+            QuitButton()
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
@@ -499,6 +491,43 @@ struct MenuRow: View {
             return Color(red: 1.0, green: 0.4, blue: 0.4)
         }
         return .white.opacity(isHovered ? 1.0 : 0.7)
+    }
+}
+
+/// Special quit button that handles Force Touch and double-click gracefully
+struct QuitButton: View {
+    @State private var isHovered = false
+    @State private var isQuitting = false
+
+    private let destructiveColor = Color(red: 1.0, green: 0.4, blue: 0.4)
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "xmark.circle")
+                .font(.system(size: 12))
+                .foregroundColor(destructiveColor)
+                .frame(width: 16)
+
+            Text("Quit")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(destructiveColor)
+
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
+        )
+        .onHover { isHovered = $0 }
+        .onTapGesture(count: 1) {
+            guard !isQuitting else { return }
+            isQuitting = true
+            // Exit immediately on first tap, ignore any subsequent events
+            exit(0)
+        }
     }
 }
 

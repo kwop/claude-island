@@ -9,8 +9,8 @@ import Foundation
 
 /// Registry of known terminal application names and bundle identifiers
 struct TerminalAppRegistry: Sendable {
-    /// Terminal app names for process matching
-    static let appNames: Set<String> = [
+    /// Pure terminal app names (not IDEs with integrated terminals)
+    static let pureTerminalNames: Set<String> = [
         "Terminal",
         "iTerm2",
         "iTerm",
@@ -26,7 +26,11 @@ struct TerminalAppRegistry: Sendable {
         "foot",
         "st",
         "urxvt",
-        "xterm",
+        "xterm"
+    ]
+
+    /// IDE names that have integrated terminals
+    static let ideNames: Set<String> = [
         "Code",           // VS Code
         "Code - Insiders",
         "Cursor",
@@ -34,8 +38,11 @@ struct TerminalAppRegistry: Sendable {
         "zed"
     ]
 
-    /// Bundle identifiers for terminal apps (for window enumeration)
-    static let bundleIdentifiers: Set<String> = [
+    /// All terminal app names for process matching (pure terminals + IDEs)
+    static let appNames: Set<String> = pureTerminalNames.union(ideNames)
+
+    /// Bundle identifiers for pure terminal apps (prioritized for activation)
+    static let pureTerminalBundleIds: [String] = [
         "com.apple.Terminal",
         "com.googlecode.iterm2",
         "com.mitchellh.ghostty",
@@ -43,7 +50,11 @@ struct TerminalAppRegistry: Sendable {
         "net.kovidgoyal.kitty",
         "co.zeit.hyper",
         "dev.warp.Warp-Stable",
-        "com.github.wez.wezterm",
+        "com.github.wez.wezterm"
+    ]
+
+    /// Bundle identifiers for IDEs with integrated terminals
+    static let ideBundleIds: Set<String> = [
         "com.microsoft.VSCode",
         "com.microsoft.VSCodeInsiders",
         "com.todesktop.230313mzl4w4u92",  // Cursor
@@ -51,7 +62,10 @@ struct TerminalAppRegistry: Sendable {
         "dev.zed.Zed"
     ]
 
-    /// Check if an app name or command path is a known terminal
+    /// All bundle identifiers for terminal apps (for window enumeration)
+    static let bundleIdentifiers: Set<String> = Set(pureTerminalBundleIds).union(ideBundleIds)
+
+    /// Check if an app name or command path is a known terminal (pure or IDE)
     static func isTerminal(_ appNameOrCommand: String) -> Bool {
         let lower = appNameOrCommand.lowercased()
 
@@ -66,8 +80,26 @@ struct TerminalAppRegistry: Sendable {
         return lower.contains("terminal") || lower.contains("iterm")
     }
 
+    /// Check if an app name or command path is a pure terminal (not an IDE)
+    static func isPureTerminal(_ appNameOrCommand: String) -> Bool {
+        let lower = appNameOrCommand.lowercased()
+
+        for name in pureTerminalNames {
+            if lower.contains(name.lowercased()) {
+                return true
+            }
+        }
+
+        return lower.contains("terminal") || lower.contains("iterm")
+    }
+
     /// Check if a bundle identifier is a known terminal
     static func isTerminalBundle(_ bundleId: String) -> Bool {
         bundleIdentifiers.contains(bundleId)
+    }
+
+    /// Check if a bundle identifier is a pure terminal (not an IDE)
+    static func isPureTerminalBundle(_ bundleId: String) -> Bool {
+        pureTerminalBundleIds.contains(bundleId)
     }
 }

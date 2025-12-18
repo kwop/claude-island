@@ -88,13 +88,32 @@ struct ClaudeInstancesView: View {
     // MARK: - Actions
 
     private func focusSession(_ session: SessionState) {
-        guard session.isInTmux else { return }
-
         Task {
-            if let pid = session.pid {
-                _ = await YabaiController.shared.focusWindow(forClaudePid: pid)
-            } else {
-                _ = await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd)
+            // For tmux sessions, first switch to the correct pane
+            if session.isInTmux, let pid = session.pid {
+                if let target = await TmuxController.shared.findTmuxTarget(forClaudePid: pid) {
+                    _ = await TmuxController.shared.switchToPane(target: target)
+                }
+            }
+
+            // Try yabai first (more precise, can focus specific window)
+            if session.isInTmux {
+                if let pid = session.pid {
+                    let success = await YabaiController.shared.focusWindow(forClaudePid: pid)
+                    if success { return }
+                } else {
+                    let success = await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd)
+                    if success { return }
+                }
+            }
+
+            // Fallback: activate terminal app directly (works without yabai)
+            await MainActor.run {
+                if let pid = session.pid {
+                    _ = WindowFinder.shared.activateTerminalApp(forClaudePid: pid)
+                } else {
+                    _ = WindowFinder.shared.activateTerminalApp(forWorkingDirectory: session.cwd)
+                }
             }
         }
     }
@@ -128,7 +147,6 @@ struct InstanceRow: View {
 
     @State private var isHovered = false
     @State private var spinnerPhase = 0
-    @State private var isYabaiAvailable = false
 
     private let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
     private let spinnerSymbols = ["·", "✢", "✳", "∗", "✻", "✽"]
@@ -234,12 +252,9 @@ struct InstanceRow: View {
                         onChat()
                     }
 
-                    // Go to Terminal button (only if yabai available)
-                    if isYabaiAvailable {
-                        TerminalButton(
-                            isEnabled: session.isInTmux,
-                            onTap: { onFocus() }
-                        )
+                    // Go to Terminal button - always show
+                    IconButton(icon: "terminal") {
+                        onFocus()
                     }
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
@@ -257,11 +272,9 @@ struct InstanceRow: View {
                         onChat()
                     }
 
-                    // Focus icon (only for tmux instances with yabai)
-                    if session.isInTmux && isYabaiAvailable {
-                        IconButton(icon: "eye") {
-                            onFocus()
-                        }
+                    // Terminal icon - always show
+                    IconButton(icon: "terminal") {
+                        onFocus()
                     }
 
                     // Archive button - only for idle or completed sessions
@@ -287,9 +300,6 @@ struct InstanceRow: View {
                 .fill(isHovered ? Color.white.opacity(0.06) : Color.clear)
         )
         .onHover { isHovered = $0 }
-        .task {
-            isYabaiAvailable = await WindowFinder.shared.isYabaiAvailable()
-        }
     }
 
     @ViewBuilder
@@ -413,58 +423,3 @@ struct IconButton: View {
     }
 }
 
-// MARK: - Compact Terminal Button (inline in description)
-
-struct CompactTerminalButton: View {
-    let isEnabled: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        Button {
-            if isEnabled {
-                onTap()
-            }
-        } label: {
-            HStack(spacing: 2) {
-                Image(systemName: "terminal")
-                    .font(.system(size: 8, weight: .medium))
-                Text("Go to Terminal")
-                    .font(.system(size: 10, weight: .medium))
-            }
-            .foregroundColor(isEnabled ? .white.opacity(0.9) : .white.opacity(0.3))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(isEnabled ? Color.white.opacity(0.15) : Color.white.opacity(0.05))
-            .clipShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Terminal Button
-
-struct TerminalButton: View {
-    let isEnabled: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        Button {
-            if isEnabled {
-                onTap()
-            }
-        } label: {
-            HStack(spacing: 3) {
-                Image(systemName: "terminal")
-                    .font(.system(size: 9, weight: .medium))
-                Text("Terminal")
-                    .font(.system(size: 11, weight: .medium))
-            }
-            .foregroundColor(isEnabled ? .black : .white.opacity(0.4))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(isEnabled ? Color.white.opacity(0.95) : Color.white.opacity(0.1))
-            .clipShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-}

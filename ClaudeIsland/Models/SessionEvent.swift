@@ -149,7 +149,8 @@ extension HookEvent {
         }
 
         switch status {
-        case "waiting_for_input":
+        case "waiting_for_input", "rejected":
+            // "rejected" = user pressed Escape to refuse answering, treated same as waiting
             return .waitingForInput
         case "running_tool", "processing", "starting":
             return .processing

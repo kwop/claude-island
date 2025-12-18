@@ -8,11 +8,16 @@
 import AppKit
 
 extension NSScreen {
+    /// Whether this screen has a physical notch
+    var hasPhysicalNotch: Bool {
+        safeAreaInsets.top > 0
+    }
+
     /// Returns the size of the notch on this screen (pixel-perfect using macOS APIs)
     var notchSize: CGSize {
         guard safeAreaInsets.top > 0 else {
             // Fallback for non-notch displays
-            return CGSize(width: 180, height: 32)
+            return CGSize(width: 224, height: 38)
         }
 
         let notchHeight = safeAreaInsets.top

@@ -163,6 +163,10 @@ struct NotchView: View {
         .preferredColorScheme(.dark)
         .onAppear {
             sessionMonitor.startMonitoring()
+            // Keep visible on non-notched devices
+            if !viewModel.hasPhysicalNotch {
+                isVisible = true
+            }
         }
         .onChange(of: viewModel.status) { oldStatus, newStatus in
             handleStatusChange(from: oldStatus, to: newStatus)
@@ -341,8 +345,8 @@ struct NotchView: View {
             // Hide activity when done
             activityCoordinator.hideActivity()
 
-            // Delay hiding the notch until animation completes
-            if viewModel.status == .closed {
+            // Delay hiding the notch until animation completes (only on notched devices)
+            if viewModel.status == .closed && viewModel.hasPhysicalNotch {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     if !isAnyProcessing && !hasPendingPermission && viewModel.status == .closed {
                         isVisible = false
@@ -357,6 +361,8 @@ struct NotchView: View {
         case .opened, .popping:
             isVisible = true
         case .closed:
+            // Don't hide on non-notched devices
+            guard viewModel.hasPhysicalNotch else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 if viewModel.status == .closed && !isAnyProcessing && !hasPendingPermission && !activityCoordinator.expandingActivity.show {
                     isVisible = false

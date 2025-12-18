@@ -65,7 +65,8 @@ struct HookEvent: Codable, Sendable {
                 toolInput: toolInput,
                 receivedAt: Date()
             ))
-        case "waiting_for_input":
+        case "waiting_for_input", "rejected":
+            // "rejected" = user pressed Escape to refuse a question, treated same as waiting
             return .waitingForInput
         case "running_tool", "processing", "starting":
             return .processing

@@ -5,6 +5,7 @@
 //  Finds windows using yabai window manager
 //
 
+import AppKit
 import Foundation
 
 /// Information about a yabai window
@@ -94,5 +95,70 @@ actor WindowFinder {
     /// Find any non-Claude window for a terminal
     nonisolated func findNonClaudeWindow(forTerminalPid pid: Int, windows: [YabaiWindow]) -> YabaiWindow? {
         windows.first { $0.pid == pid && !$0.title.contains("✳") }
+    }
+
+    /// Find and activate the terminal application for a given Claude PID
+    /// This works without yabai by finding the parent terminal app and activating it
+    @MainActor
+    func activateTerminalApp(forClaudePid claudePid: Int) -> Bool {
+        let tree = ProcessTreeBuilder.shared.buildTree()
+
+        // First pass: look for a pure terminal (not an IDE)
+        var currentPid = claudePid
+        var depth = 0
+
+        while currentPid > 1 && depth < 30 {
+            guard let info = tree[currentPid] else { break }
+
+            // Check if this process is a pure terminal (not IDE)
+            if TerminalAppRegistry.isPureTerminal(info.command) {
+                if let app = NSRunningApplication(processIdentifier: pid_t(currentPid)) {
+                    return app.activate()
+                }
+            }
+
+            currentPid = info.ppid
+            depth += 1
+        }
+
+        // Second pass: if no pure terminal found, try any terminal (including IDE)
+        currentPid = claudePid
+        depth = 0
+
+        while currentPid > 1 && depth < 30 {
+            guard let info = tree[currentPid] else { break }
+
+            if TerminalAppRegistry.isTerminal(info.command) {
+                if let app = NSRunningApplication(processIdentifier: pid_t(currentPid)) {
+                    return app.activate()
+                }
+            }
+
+            currentPid = info.ppid
+            depth += 1
+        }
+
+        // Fallback: try to find any running pure terminal app first
+        let runningApps = NSWorkspace.shared.runningApplications
+        for bundleId in TerminalAppRegistry.pureTerminalBundleIds {
+            if let app = runningApps.first(where: { $0.bundleIdentifier == bundleId }) {
+                return app.activate()
+            }
+        }
+
+        return false
+    }
+
+    /// Find and activate terminal app for a given working directory
+    @MainActor
+    func activateTerminalApp(forWorkingDirectory cwd: String) -> Bool {
+        // Try to find any running pure terminal app first (prioritize real terminals over IDEs)
+        let runningApps = NSWorkspace.shared.runningApplications
+        for bundleId in TerminalAppRegistry.pureTerminalBundleIds {
+            if let app = runningApps.first(where: { $0.bundleIdentifier == bundleId }) {
+                return app.activate()
+            }
+        }
+        return false
     }
 }
